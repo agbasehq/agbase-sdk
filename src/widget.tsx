@@ -1,53 +1,29 @@
 'use client'
 
-import { useState, useRef, useEffect, useMemo } from "react";
-import { AGBaseClient } from "./client.js";
+import { useState, useRef, useEffect } from "react";
+import { useConversation } from "./use-conversation.js";
+import { widgetStyles } from "./widget-styles.js";
 import { toast, Toaster } from "react-hot-toast";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from "remark-gfm";
 
-interface Message {
-    id: string;
-    role: 'user' | 'assistant';
-    content: string;
-    image?: string;
-    route?: string | null;
-    elementId?: string | null;
-}
+const pendingHighlightKey = "agbase-widget:pending-highlight";
 
-const highlightElement = (id?: string | null) => {
-    if (!id) return;
+function highlightElement(id: string) {
+    const element = document.getElementById(id);
+    if (!element) return;
 
-    const el = document.getElementById(id);
-
-    if (!el) return;
-
-    el.scrollIntoView({
-        behavior: "smooth",
+    element.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
         block: "center",
     });
-
-    el.classList.add("agbase-highlight");
-
-    setTimeout(() => {
-        el.classList.remove("agbase-highlight");
-    }, 3000);
-};
-
-const navigateAndHighlight = (
-    route?: string | null,
-    elementId?: string | null
-) => {
-    if (route && window.location.pathname !== route) {
-        window.location.href = route;
-
-        setTimeout(() => {
-            highlightElement(elementId);
-        }, 700);
-    } else {
-        highlightElement(elementId);
-    }
-};
+    element.classList.add("agbase-highlight");
+    const timer = window.setTimeout(() => element.classList.remove("agbase-highlight"), 3000);
+    return () => {
+        window.clearTimeout(timer);
+        element.classList.remove("agbase-highlight");
+    };
+}
 
 export default function ChatWidget({
     name = 'Assistant',
@@ -60,171 +36,82 @@ export default function ChatWidget({
     const [openChatBubble, setOpenChatBubble] =
         useState<boolean>(false);
 
-    const [input, setInput] = useState("");
+    const {
+        input, setInput, messages, isTyping, statusText,
+        selectedFile, setSelectedFile, sendMessage,
+    } = useConversation(appKey);
 
-    const [messages, setMessages] = useState<Message[]>([
-        {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: 'Hello! How can I help you today?'
-        }
-    ]);
+    const [zoomedImage, setZoomedImage] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const scrollRef = useRef<HTMLDivElement>(null);
 
-    const [isTyping, setIsTyping] =
-        useState(false);
-
-    const [statusText, setStatusText] =
-        useState("");
-
-    const [selectedFile, setSelectedFile] =
-        useState<File | null>(null);
-
-    const [zoomedImage, setZoomedImage] =
-        useState<string | null>(null);
-
-    const fileInputRef =
-        useRef<HTMLInputElement>(null);
-
-    const scrollRef =
-        useRef<HTMLDivElement>(null);
-
-    const ai = useMemo(
-        () => new AGBaseClient({ appKey }),
-        [appKey]
-    );
+    const clearHighlight = useRef<(() => void) | undefined>(undefined);
+    const launcherRef = useRef<HTMLButtonElement>(null);
+    const composerRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
-        if (scrollRef.current) {
-            scrollRef.current.scrollTop =
-                scrollRef.current.scrollHeight;
-        }
-    }, [messages, isTyping]);
-
-    const sendMessage = async () => {
-
-        if ((!input.trim() && !selectedFile) || isTyping) {
-            return;
-        }
-
-        const userMsg = input.trim();
-
-        const fileToUpload = selectedFile;
-
-        setInput("");
-        setSelectedFile(null);
-
-        // USER MESSAGE
-        setMessages(prev => [
-            ...prev,
-            {
-                id: crypto.randomUUID(),
-                role: 'user',
-                content: userMsg
-            }
-        ]);
-
-        // EMPTY ASSISTANT MESSAGE
-        const assistantId = crypto.randomUUID();
-
-        setMessages(prev => [
-            ...prev,
-            {
-                id: assistantId,
-                role: 'assistant',
-                content: ''
-            }
-        ]);
-
-        setIsTyping(true);
-
         try {
-
-            await ai.ask({
-
-                query: userMsg,
-
-                ...(fileToUpload
-                    ? { file: fileToUpload }
-                    : {}),
-
-                onStatus(message) {
-
-                    setStatusText(message);
-                },
-
-                onText(chunk) {
-
-                    setMessages(prev =>
-                        prev.map(msg =>
-                            msg.id === assistantId
-                                ? {
-                                    ...msg,
-                                    content:
-                                        msg.content + chunk
-                                }
-                                : msg
-                        )
-                    );
-                },
-
-                onMeta(meta) {
-
-                    setMessages(prev =>
-                        prev.map(msg =>
-                            msg.id === assistantId
-                                ? {
-                                    ...msg,
-                                    route: meta.route,
-                                    elementId: meta.elementId
-                                }
-                                : msg
-                        )
-                    );
-                },
-
-                onDone() {
-
-                    setIsTyping(false);
-
-                    setStatusText("");
-                },
-
-                onError(message) {
-
-                    setIsTyping(false);
-
-                    setStatusText("");
-
-                    toast.error(message);
-
-                    setMessages(prev =>
-                        prev.map(msg =>
-                            msg.id === assistantId
-                                ? {
-                                    ...msg,
-                                    content: message
-                                }
-                                : msg
-                        )
-                    );
+            const entry = window.sessionStorage.getItem(pendingHighlightKey);
+            if (entry) {
+                window.sessionStorage.removeItem(pendingHighlightKey);
+                const [url, id, expires] = JSON.parse(entry) as [string, string, number];
+                if (url === window.location.href && Date.now() < expires) {
+                    clearHighlight.current = highlightElement(id);
                 }
-            });
-
-        } catch (error: any) {
-
-            setIsTyping(false);
-
-            setStatusText("");
-
-            toast.error(
-                error?.message ||
-                "Something went wrong"
-            );
+            }
+        } catch {
+            // Storage may be unavailable in an embedded or private browser context.
         }
-    };
+        return () => clearHighlight.current?.();
+    }, []);
+
+    function navigateAndHighlight(route?: string | null, elementId?: string | null) {
+        if (route) {
+            let destination: URL;
+            try {
+                destination = new URL(route, window.location.href);
+            } catch {
+                return;
+            }
+            if (destination.origin !== window.location.origin ||
+                !["https:", "http:"].includes(destination.protocol)) return;
+
+            if (destination.href !== window.location.href) {
+                if (elementId) {
+                    try {
+                        window.sessionStorage.setItem(pendingHighlightKey, JSON.stringify([
+                            destination.href, elementId, Date.now() + 10000,
+                        ]));
+                    } catch {
+                        // Navigation still works when storage is unavailable.
+                    }
+                }
+                window.location.assign(destination.href);
+                return;
+            }
+        }
+
+        if (elementId) {
+            clearHighlight.current?.();
+            clearHighlight.current = highlightElement(elementId);
+        }
+    }
+
+    useEffect(() => {
+        if (openChatBubble) composerRef.current?.focus();
+    }, [openChatBubble]);
+
+    function closeChat() {
+        setOpenChatBubble(false);
+        requestAnimationFrame(() => launcherRef.current?.focus());
+    }
+
+    useEffect(() => {
+        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }, [messages, isTyping, openChatBubble]);
 
     const btnPrimary = {
-        backgroundColor: '#4f46e5',
+        backgroundColor: 'var(--agbase-primary)',
         color: 'white',
         padding: '8px 14px',
         borderRadius: '8px',
@@ -235,132 +122,37 @@ export default function ChatWidget({
     };
 
     const btnSecondary = {
-        backgroundColor: '#eef2ff',
-        color: '#4338ca',
+        backgroundColor: 'var(--agbase-input)',
+        color: 'var(--agbase-accent)',
         padding: '8px 14px',
         borderRadius: '8px',
         fontSize: '13px',
         fontWeight: 500,
-        border: '1px solid #c7d2fe',
+        border: '1px solid var(--agbase-border)',
         cursor: 'pointer'
     };
 
     return (
-        <div style={{
-            fontFamily:
-                'Inter, system-ui, sans-serif'
-        }}>
+        <div data-agbase-widget>
 
             <Toaster
                 position="top-center"
                 reverseOrder={false}
             />
 
-            <style>
-                {`
-                    @keyframes float {
-                        0%, 100% {
-                            transform: translateY(0px);
-                        }
-                        50% {
-                            transform: translateY(-5px);
-                        }
-                    }
-
-                    @keyframes blink {
-                        0%, 90%, 100% {
-                            opacity: 1;
-                        }
-                        95% {
-                            opacity: 0.3;
-                        }
-                    }
-
-                    @keyframes fadeIn {
-                        from {
-                            opacity: 0;
-                            transform: translateY(10px);
-                        }
-                        to {
-                            opacity: 1;
-                            transform: translateY(0);
-                        }
-                    }
-
-                    .chat-bubble {
-                        animation: float 2s ease-in-out infinite;
-                    }
-
-                    .robot-eye {
-                        animation: blink 3s ease-in-out infinite;
-                    }
-
-                    .markdown-container {
-                        line-height: 1.7;
-                    }
-
-                    .markdown-container pre {
-                        overflow-x: auto;
-                    }
-
-                    .markdown-container code {
-                        font-family: monospace;
-                    }
-
-                    .markdown-container table {
-                        border-collapse: collapse;
-                        width: 100%;
-                    }
-
-                    .markdown-container th,
-                    .markdown-container td {
-                        border: 1px solid #e5e7eb;
-                        padding: 8px;
-                    }
-
-                    .markdown-container strong {
-                        font-weight: 700;
-                        color: #111827;
-                    }
-
-                    .markdown-container a {
-                        color: #4f46e5;
-                        text-decoration: underline;
-                    }
-
-                    .markdown-container pre {
-                        white-space: pre-wrap;
-                        word-wrap: break-word;
-                    }
-
-                    @keyframes pulseHighlight {
-                        0% {
-                            box-shadow: 0 0 0 0 rgba(99,102,241,0.6);
-                        }
-                        70% {
-                            box-shadow: 0 0 0 12px rgba(99,102,241,0);
-                        }
-                        100% {
-                            box-shadow: 0 0 0 0 rgba(99,102,241,0);
-                        }
-                    }
-
-                    .agbase-highlight {
-                        animation: pulseHighlight 1.5s ease-out 2;
-                        outline: 3px solid #6366f1;
-                        border-radius: 8px;
-                    }
-                `}
-            </style>
+            <style>{widgetStyles}</style>
 
             {zoomedImage && (
                 <div
+                    role="dialog"
+                    aria-label="Image preview"
+                    aria-modal="true"
+                    onKeyDown={event => { if (event.key === "Escape") setZoomedImage(null); }}
                     onClick={() => setZoomedImage(null)}
                     style={{
                         position: 'fixed',
                         inset: 0,
-                        backgroundColor:
-                            'rgba(0,0,0,0.8)',
+                        backgroundColor: 'rgba(0,0,0,0.8)',
                         backdropFilter: 'blur(5px)',
                         zIndex: 20000,
                         display: 'flex',
@@ -370,7 +162,7 @@ export default function ChatWidget({
                         padding: '20px'
                     }}
                 >
-                    <button
+                    <button type="button" aria-label="Close image preview" autoFocus
                         style={{
                             position: 'absolute',
                             top: '20px',
@@ -402,44 +194,59 @@ export default function ChatWidget({
             )}
 
             {!openChatBubble && (
-                <svg width="60" height="60" viewBox="0 0 60 60" fill="none" style={{ cursor: 'pointer', position: 'fixed', bottom: '20px', right: '20px', zIndex: 9999, filter: 'drop-shadow(0px 4px 12px rgba(0, 0, 0, 0.15))' }} onClick={() => setOpenChatBubble(true)}>
-                    <g className="chat-bubble">
-                        <ellipse cx="30" cy="52" rx="15" ry="3" fill="#000" opacity="0.1" />
-                        <path d="M45 15C45 8.37258 39.6274 3 33 3H15C8.37258 3 3 8.37258 3 15V33C3 39.6274 8.37258 45 15 45H18V52L26 45H33C39.6274 45 45 39.6274 45 33V15Z" fill="#4F46E5" />
-                        <g transform="translate(12, 14)">
-                            <line x1="12" y1="0" x2="12" y2="3" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-                            <circle cx="12" cy="0" r="1.5" fill="white" />
-                            <rect x="6" y="3" width="12" height="10" rx="2" fill="white" />
-                            <circle className="robot-eye" cx="9.5" cy="8" r="1.5" fill="#4F46E5" />
-                            <circle className="robot-eye" cx="14.5" cy="8" r="1.5" fill="#4F46E5" />
-                            <line x1="9" y1="11" x2="15" y2="11" stroke="#4F46E5" strokeWidth="1" strokeLinecap="round" />
-                            <rect x="7" y="14" width="10" height="6" rx="1" fill="white" />
-                            <rect x="4" y="15" width="2" height="4" rx="1" fill="white" />
-                            <rect x="18" y="15" width="2" height="4" rx="1" fill="white" />
+                <button
+                    type="button"
+                    ref={launcherRef}
+                    aria-label="Open chat"
+                    className="agbase-launcher"
+                    onClick={() => setOpenChatBubble(true)}
+                    style={{
+                        position: 'fixed', bottom: 20, right: 20, zIndex: 9999,
+                        background: 'none', border: 0, padding: 0, cursor: 'pointer',
+                        filter: 'drop-shadow(0px 4px 12px rgba(0, 0, 0, 0.15))',
+                    }}
+                >
+                    <svg aria-hidden="true" width="60" height="60" viewBox="0 0 60 60" fill="none">
+                        <g className="agbase-chat-bubble">
+                            <ellipse cx="30" cy="52" rx="15" ry="3" fill="#000" opacity="0.1" />
+                            <path d="M45 15C45 8.37258 39.6274 3 33 3H15C8.37258 3 3 8.37258 3 15V33C3 39.6274 8.37258 45 15 45H18V52L26 45H33C39.6274 45 45 39.6274 45 33V15Z" fill="var(--agbase-primary)" />
+                            <g transform="translate(12, 14)">
+                                <line x1="12" y1="0" x2="12" y2="3" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                                <circle cx="12" cy="0" r="1.5" fill="white" />
+                                <rect x="6" y="3" width="12" height="10" rx="2" fill="white" />
+                                <circle className="agbase-robot-eye" cx="9.5" cy="8" r="1.5" fill="var(--agbase-primary)" />
+                                <circle className="agbase-robot-eye" cx="14.5" cy="8" r="1.5" fill="var(--agbase-primary)" />
+                                <line x1="9" y1="11" x2="15" y2="11" stroke="var(--agbase-primary)" strokeWidth="1" strokeLinecap="round" />
+                                <rect x="7" y="14" width="10" height="6" rx="1" fill="white" />
+                                <rect x="4" y="15" width="2" height="4" rx="1" fill="white" />
+                                <rect x="18" y="15" width="2" height="4" rx="1" fill="white" />
+                            </g>
                         </g>
-                    </g>
-                </svg>
+                    </svg>
+                </button>
             )}
 
             {openChatBubble && (
 
                 <div
+                    className="agbase-panel"
+                    role="region"
+                    aria-label={name}
+                    onKeyDown={(event) => {
+                        if (event.key === "Escape") closeChat();
+                    }}
                     style={{
                         position: 'fixed',
-                        bottom: '20px',
-                        right: '20px',
-                        width: 'min(400px, 90vw)',
-                        height: 'min(600px, 85vh)',
-                        backgroundColor: '#fff',
+                        backgroundColor: 'var(--agbase-surface)',
                         boxShadow:
-                            '0 12px 40px rgba(79, 70, 229, 0.25)',
+                            '0 18px 42px rgb(0 0 0 / 35%)',
                         borderRadius: '16px',
                         display: 'flex',
                         flexDirection: 'column',
                         zIndex: 10000,
                         overflow: 'hidden',
-                        border: '1px solid #e5e7eb',
-                        animation: 'fadeIn 0.2s ease-out'
+                        border: '1px solid var(--agbase-border)',
+                        animation: 'agbase-widget-fade-in 0.2s ease-out'
                     }}
                 >
 
@@ -447,7 +254,8 @@ export default function ChatWidget({
 
                     <div
                         style={{
-                            backgroundColor: "#4f46e5",
+                            backgroundColor: "var(--agbase-surface)",
+                            borderBottom: "1px solid var(--agbase-border)",
                             padding: '14px 18px',
                             display: 'flex',
                             alignItems: 'center',
@@ -468,10 +276,8 @@ export default function ChatWidget({
                                 style={{
                                     width: '8px',
                                     height: '8px',
-                                    backgroundColor: '#22c55e',
+                                    backgroundColor: 'var(--agbase-accent)',
                                     borderRadius: '50%',
-                                    boxShadow:
-                                        '0 0 8px #22c55e'
                                 }}
                             />
 
@@ -485,18 +291,21 @@ export default function ChatWidget({
                             </span>
                         </div>
 
-                        <span
+                        <button
+                            type="button"
                             style={{
                                 cursor: 'pointer',
+                                background: 'transparent',
+                                color: 'inherit',
+                                border: 0,
                                 fontSize: '18px',
                                 opacity: 0.8
                             }}
-                            onClick={() =>
-                                setOpenChatBubble(false)
-                            }
+                            onClick={closeChat}
+                            aria-label="Close chat"
                         >
                             ✕
-                        </span>
+                        </button>
                     </div>
 
                     {/* MESSAGES */}
@@ -510,7 +319,8 @@ export default function ChatWidget({
                             display: 'flex',
                             flexDirection: 'column',
                             gap: '12px',
-                            backgroundColor: '#f9fafb'
+                            backgroundColor: 'var(--agbase-bg)',
+                            overscrollBehavior: 'contain'
                         }}
                     >
 
@@ -523,7 +333,9 @@ export default function ChatWidget({
                                         msg.role === 'user'
                                             ? 'flex-end'
                                             : 'flex-start',
-                                    maxWidth: '85%',
+                                    maxWidth: '90%',
+                                    minWidth: 0,
+                                    overflowWrap: 'anywhere',
                                     display: 'flex',
                                     flexDirection: 'column',
                                     gap: '4px'
@@ -534,13 +346,13 @@ export default function ChatWidget({
                                     style={{
                                         backgroundColor:
                                             msg.role === 'user'
-                                                ? '#4f46e5'
-                                                : '#fff',
+                                                ? 'var(--agbase-primary)'
+                                                : 'var(--agbase-surface)',
 
                                         color:
                                             msg.role === 'user'
                                                 ? '#fff'
-                                                : '#374151',
+                                                : 'var(--agbase-text)',
 
                                         padding: '12px 16px',
                                         borderRadius: '12px',
@@ -549,12 +361,9 @@ export default function ChatWidget({
                                         border:
                                             msg.role === 'user'
                                                 ? 'none'
-                                                : '1px solid #e5e7eb',
+                                                : '1px solid var(--agbase-border)',
 
-                                        boxShadow:
-                                            msg.role === 'user'
-                                                ? '0 2px 4px rgba(79,70,229,0.2)'
-                                                : '0 1px 2px rgba(0,0,0,0.05)'
+
                                     }}
                                 >
 
@@ -581,7 +390,7 @@ export default function ChatWidget({
 
                                     {msg.role === 'assistant' ? (
 
-                                        <div className="markdown-container">
+                                        <div className="agbase-markdown-container">
 
                                             <ReactMarkdown
                                                 remarkPlugins={[remarkGfm]}
@@ -596,8 +405,8 @@ export default function ChatWidget({
                                                             return (
                                                                 <code
                                                                     style={{
-                                                                        background: "#eef2ff",
-                                                                        color: "#4338ca",
+                                                                        background: "var(--agbase-input)",
+                                                                        color: "var(--agbase-accent)",
                                                                         padding: "2px 6px",
                                                                         borderRadius: "6px",
                                                                         fontSize: "13px",
@@ -612,8 +421,8 @@ export default function ChatWidget({
                                                         return (
                                                             <pre
                                                                 style={{
-                                                                    background: "#111827",
-                                                                    color: "#f9fafb",
+                                                                    background: "var(--agbase-bg)",
+                                                                    color: "var(--agbase-text)",
                                                                     padding: "14px",
                                                                     borderRadius: "10px",
                                                                     overflowX: "auto",
@@ -691,7 +500,7 @@ export default function ChatWidget({
                                                                     fontWeight: 700,
                                                                     marginTop: "16px",
                                                                     marginBottom: "10px",
-                                                                    color: "#111827",
+                                                                    color: "var(--agbase-text)",
                                                                 }}
                                                             >
                                                                 {props.children}
@@ -707,7 +516,7 @@ export default function ChatWidget({
                                                                     fontWeight: 700,
                                                                     marginTop: "14px",
                                                                     marginBottom: "8px",
-                                                                    color: "#111827",
+                                                                    color: "var(--agbase-text)",
                                                                 }}
                                                             >
                                                                 {props.children}
@@ -723,7 +532,7 @@ export default function ChatWidget({
                                                                     fontWeight: 600,
                                                                     marginTop: "12px",
                                                                     marginBottom: "6px",
-                                                                    color: "#111827",
+                                                                    color: "var(--agbase-text)",
                                                                 }}
                                                             >
                                                                 {props.children}
@@ -738,7 +547,7 @@ export default function ChatWidget({
                                                                 target="_blank"
                                                                 rel="noreferrer"
                                                                 style={{
-                                                                    color: "#4f46e5",
+                                                                    color: "var(--agbase-accent)",
                                                                     textDecoration: "underline",
                                                                     fontWeight: 500,
                                                                 }}
@@ -752,10 +561,10 @@ export default function ChatWidget({
                                                         return (
                                                             <blockquote
                                                                 style={{
-                                                                    borderLeft: "4px solid #6366f1",
+                                                                    borderLeft: "4px solid var(--agbase-accent)",
                                                                     paddingLeft: "12px",
                                                                     marginLeft: 0,
-                                                                    color: "#4b5563",
+                                                                    color: "var(--agbase-muted)",
                                                                     fontStyle: "italic",
                                                                     marginTop: "10px",
                                                                     marginBottom: "10px",
@@ -776,7 +585,7 @@ export default function ChatWidget({
                                                     style={{
                                                         marginTop: '12px',
                                                         borderTop:
-                                                            '1px solid #f3f4f6',
+                                                            '1px solid var(--agbase-border)',
 
                                                         paddingTop: '10px',
 
@@ -790,7 +599,7 @@ export default function ChatWidget({
 
                                                     {msg.route && (
 
-                                                        <button
+                                                        <button type="button"
                                                             onClick={() =>
                                                                 window.location.href =
                                                                 msg.route!
@@ -803,7 +612,7 @@ export default function ChatWidget({
 
                                                     {msg.elementId && (
 
-                                                        <button
+                                                        <button type="button"
                                                             onClick={() =>
                                                                 navigateAndHighlight(
                                                                     msg.route,
@@ -835,9 +644,10 @@ export default function ChatWidget({
 
                         {isTyping && (
                             <div
+                                role="status"
                                 style={{
                                     fontSize: '12px',
-                                    color: '#6b7280',
+                                    color: 'var(--agbase-muted)',
                                     marginLeft: '4px'
                                 }}
                             >
@@ -851,9 +661,9 @@ export default function ChatWidget({
 
                     <div
                         style={{
-                            padding: '16px',
-                            borderTop: '1px solid #e5e7eb',
-                            backgroundColor: '#fff'
+                            padding: 'var(--agbase-composer-padding)',
+                            borderTop: '1px solid var(--agbase-border)',
+                            backgroundColor: 'var(--agbase-surface)'
                         }}
                     >
 
@@ -862,13 +672,14 @@ export default function ChatWidget({
                                 display: 'flex',
                                 alignItems: 'center',
                                 gap: '10px',
-                                backgroundColor: '#f3f4f6',
+                                backgroundColor: 'var(--agbase-input)',
                                 padding: '6px 14px',
-                                borderRadius: '28px'
+                                borderRadius: '12px',
+                                border: '1px solid var(--agbase-border)'
                             }}
                         >
 
-                            <button
+                            <button type="button"
                                 style={{
                                     background: 'none',
                                     border: 'none',
@@ -876,6 +687,7 @@ export default function ChatWidget({
                                     padding: '4px',
                                     display: 'flex'
                                 }}
+                                aria-label="Attach image"
                                 onClick={() =>
                                     fileInputRef.current?.click()
                                 }
@@ -886,7 +698,7 @@ export default function ChatWidget({
                                     height="20"
                                     viewBox="0 0 24 24"
                                     fill="none"
-                                    stroke="#9ca3af"
+                                    stroke="var(--agbase-muted)"
                                     strokeWidth="2"
                                     strokeLinecap="round"
                                     strokeLinejoin="round"
@@ -921,6 +733,7 @@ export default function ChatWidget({
                                         const file =
                                             e.target.files?.[0];
 
+                                        e.currentTarget.value = "";
                                         if (file) {
                                             setSelectedFile(file);
 
@@ -936,7 +749,7 @@ export default function ChatWidget({
                                 <div
                                     style={{
                                         fontSize: '11px',
-                                        color: '#4f46e5',
+                                        color: 'var(--agbase-accent)',
                                         maxWidth: '80px',
                                         overflow: 'hidden',
                                         textOverflow: 'ellipsis',
@@ -949,27 +762,30 @@ export default function ChatWidget({
 
                             <input
                                 type="text"
+                                ref={composerRef}
                                 value={input}
                                 onChange={(e) =>
                                     setInput(e.target.value)
                                 }
                                 onKeyDown={(e) =>
-                                    e.key === 'Enter' &&
+                                    e.key === 'Enter' && !e.nativeEvent.isComposing &&
                                     sendMessage()
                                 }
+                                aria-label="Message"
                                 placeholder="Type a message..."
                                 style={{
                                     flex: 1,
+                                    minWidth: 0,
                                     border: 'none',
                                     background: 'none',
                                     padding: '10px 0',
-                                    outline: 'none',
-                                    fontSize: '14px',
-                                    color: '#1f2937'
+                                    fontSize: '16px',
+                                    color: 'var(--agbase-text)'
                                 }}
                             />
 
-                            <button
+                            <button type="button"
+                                aria-label="Send message"
                                 onClick={sendMessage}
                                 disabled={
                                     (!input.trim() &&
@@ -981,7 +797,7 @@ export default function ChatWidget({
                                         (input.trim() ||
                                             selectedFile) &&
                                             !isTyping
-                                            ? '#4f46e5'
+                                            ? 'var(--agbase-primary)'
                                             : 'transparent',
 
                                     border: 'none',
@@ -1019,7 +835,7 @@ export default function ChatWidget({
                                             selectedFile) &&
                                             !isTyping
                                             ? "#fff"
-                                            : "#9ca3af"
+                                            : "var(--agbase-muted)"
                                     }
                                     strokeWidth="2.5"
                                     strokeLinecap="round"
@@ -1043,7 +859,7 @@ export default function ChatWidget({
                             style={{
                                 textAlign: 'center',
                                 fontSize: '11px',
-                                color: '#9ca3af',
+                                color: 'var(--agbase-muted)',
                                 marginTop: '10px'
                             }}
                         >

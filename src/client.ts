@@ -1,3 +1,5 @@
+import { readEventData } from "./stream.js";
+
 export interface MetaData {
   route: string | null;
   elementId: string | null;
@@ -6,6 +8,7 @@ export interface MetaData {
 export interface AskOptions {
   query: string;
   file?: File;
+  signal?: AbortSignal;
 
   onText?: (chunk: string) => void;
 
@@ -23,131 +26,103 @@ export interface AGBaseConfig {
   baseUrl?: string;
 }
 
+const defaultEndpoint = "https://agbase.vercel.app/api/v2/chat";
+
+function resolveEndpoint(baseUrl?: string) {
+  if (!baseUrl?.trim()) return defaultEndpoint;
+
+  const url = new URL(baseUrl.trim());
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("AGBase baseUrl must use HTTP or HTTPS");
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  if (!path || path === "/api" || path === "/api/v1" || path === "/api/v2") {
+    url.pathname = "/api/v2/chat";
+  } else {
+    url.pathname = path.endsWith("/chat") ? path : path + "/chat";
+  }
+  return url.href;
+}
+
+type StreamEvent = {
+  type?: string;
+  chunk?: unknown;
+  message?: unknown;
+  route?: unknown;
+  elementId?: unknown;
+};
+
 export class AGBaseClient {
-  private appKey: string;
-  private baseUrl: string;
+  private readonly appKey: string;
+  private readonly baseUrl: string | undefined;
 
   constructor(config: AGBaseConfig) {
     this.appKey = config.appKey;
-
-    this.baseUrl = config.baseUrl || "https://agbase.vercel.app/api/v1";
+    this.baseUrl = config.baseUrl;
   }
 
   async ask(options: AskOptions): Promise<void> {
-    const controller = new AbortController();
-    let textBuffer = "";
-    let flushTimeout: any = null;
+    const signal = options.signal ?? new AbortController().signal;
+    let failure: string | undefined;
+    let completed = false;
 
     try {
-      const formData = new FormData();
+      if (signal.aborted) throw new Error("Request was aborted");
 
+      const formData = new FormData();
       formData.append("appKey", this.appKey);
       formData.append("query", options.query);
+      if (options.file) formData.append("image", options.file);
 
-      if (options.file) {
-        formData.append("image", options.file);
-      }
-
-      const response = await fetch(`https://agbase.vercel.app/api/v2/chat`, {
+      const response = await fetch(resolveEndpoint(this.baseUrl), {
         method: "POST",
-        signal: controller.signal,
+        signal,
         body: formData,
       });
 
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
+      if (!response.body) throw new Error("Empty response body");
 
-      if (!response.body) {
-        throw new Error("Empty response body");
-      }
+      for await (const frame of readEventData(response.body, signal)) {
+        if (signal.aborted) break;
 
-      const reader = response.body.getReader();
-
-      const decoder = new TextDecoder();
-
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) break;
-
-        buffer += decoder.decode(value, {
-          stream: true,
-        });
-
-        const events = buffer.split("\n\n");
-
-        buffer = events.pop() || "";
-
-        for (const event of events) {
-          if (!event.startsWith("data: ")) continue;
-
-          const json = event.replace("data: ", "");
-
-          try {
-            const data = JSON.parse(json);
-
-            switch (data.type) {
-              case "text":
-                textBuffer += data.chunk;
-
-                if (!flushTimeout) {
-                  flushTimeout = setTimeout(() => {
-                    options.onText?.(textBuffer);
-
-                    textBuffer = "";
-                    flushTimeout = null;
-                  }, 35);
-                }
-
-                break;
-
-              case "meta":
-                options.onMeta?.({
-                  route: data.route,
-                  elementId: data.elementId,
-                });
-                break;
-
-              case "status":
-                options.onStatus?.(data.message);
-                break;
-
-              case "done":
-                if (flushTimeout) {
-                  clearTimeout(flushTimeout);
-
-                  options.onText?.(textBuffer);
-
-                  textBuffer = "";
-                  flushTimeout = null;
-                }
-
-                options.onDone?.();
-
-                break;
-
-              case "error":
-                options.onError?.(data.message);
-                break;
-            }
-          } catch (err) {
-            console.error("Failed to parse SSE event:", err);
-          }
+        let event: StreamEvent | null;
+        try {
+          event = JSON.parse(frame);
+        } catch {
+          continue;
         }
-      }
-    } catch (error: any) {
-      if (error?.name === "AbortError") {
-        options.onError?.("Request was aborted");
 
-        return;
+        switch (event?.type) {
+          case "text":
+            if (typeof event.chunk === "string") options.onText?.(event.chunk);
+            break;
+          case "status":
+            if (typeof event.message === "string") options.onStatus?.(event.message);
+            break;
+          case "meta":
+            options.onMeta?.({
+              route: typeof event.route === "string" ? event.route : null,
+              elementId: typeof event.elementId === "string" ? event.elementId : null,
+            });
+            break;
+          case "done":
+            completed = true;
+            break;
+          case "error":
+            failure = typeof event.message === "string" ? event.message : "AGBase request failed";
+            break;
+        }
+        if (completed || failure !== undefined) break;
       }
 
-      options.onError?.(
-        error?.message.message || error?.message || "Unknown AGBase error",
-      );
+      if (!completed) failure ??= signal.aborted ? "Request was aborted" : "AGBase response ended before completion";
+    } catch (error) {
+      failure = signal.aborted ? "Request was aborted"
+        : error instanceof Error ? error.message : "Unknown AGBase error";
     }
+
+    if (completed) options.onDone?.();
+    else if (failure !== undefined) options.onError?.(failure);
   }
 }

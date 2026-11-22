@@ -46,14 +46,16 @@ export default function App() {
   );
 }
 ```
-Html:
-```tsx
+HTML:
+```html
 <script 
-  src="https://cdn.jsdelivr.net/npm/@agbase/sdk@0.4.0/dist/loader.standalone.js"
+  src="/assets/loader.standalone.js"
   data-app-key="your-app-key-here"
   data-name="YOUR_ASSISTANT_NAME"
 ></script>
 ```
+
+Copy `dist/loader.standalone.js` from the package or your local SDK build to the path used in the snippet.
 
 ### Using the AGBaseClient
 
@@ -66,20 +68,34 @@ const ai = new AGBaseClient({
   appKey: 'your-app-key-here'
 });
  
-// Send only query
-const res = await ai.ask(userQuery);
-// Send query with user Image
-const res = await ai.ask(userQuery, ImageFile);
+const request = new AbortController();
 
-// Response format
-{
-    res: string,          // AI response
-    image: string|null,   // image URL if relevant
-    route: string|null,   // app route for navigation
-    elementId: string|null // UI element to highlight
-}
-
+await ai.ask({
+  query: 'How do I get started?',
+  // file: selectedImage,
+  signal: request.signal,
+  onText: (chunk) => console.log(chunk),
+  onMeta: ({ route, elementId }) => console.log(route, elementId),
+  onStatus: (message) => console.log(message),
+  onDone: () => console.log('Complete'),
+  onError: (message) => console.error(message),
+});
 ```
+
+`ask()` returns `Promise<void>` and delivers responses through callbacks. Call
+`request.abort()` to cancel a request. An interrupted stream calls `onError`.
+
+Omit `baseUrl` to use the hosted streaming endpoint. An absolute origin or an
+absolute URL ending in `/api`, `/api/v1`, or `/api/v2` at the root uses
+`/api/v2/chat` on that origin. An explicit URL ending in `/chat` is used
+directly and must serve the streaming protocol.
+
+In Next.js App Router, import and render `ChatWidget` from a file with
+`'use client'`.
+
+## Local development
+
+Run `npm ci`, `npm run lint`, `npm run build`, then `npm test`. The tests import the built package. A release build creates the ESM and CommonJS entries, declarations, and `dist/loader.standalone.js`. If a dashboard uses `npm link`, run its `npm run dev:linked` command and run the SDK watcher with `npm run dev` after the initial build.
 
 ## 🔗 Resources
 

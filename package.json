@@ -1,6 +1,6 @@
 {
   "name": "@agbase/sdk",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Plug-and-play AI assistants infrastructure as a service.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -28,7 +28,8 @@
   "scripts": {
     "build": "tsup src/index.ts src/loader.ts --format cjs,esm --dts --clean --minify && node build-standalone.mjs",
     "dev": "tsup src/index.ts src/loader.ts --format cjs,esm --watch --dts",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
   },
   "keywords": [
     "ai",
